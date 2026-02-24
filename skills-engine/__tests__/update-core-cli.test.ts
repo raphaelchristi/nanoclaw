@@ -4,20 +4,21 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 
-import { cleanup, createTempDir, initGitRepo, setupNanoclawDir } from './test-helpers.js';
+import { cleanup, createTempDir, initGitRepo, setupAodDir } from './test-helpers.js';
 
 describe('update-core.ts CLI flags', () => {
   let tmpDir: string;
   const scriptPath = path.resolve('scripts/update-core.ts');
-  const tsxBin = path.resolve('node_modules/.bin/tsx');
+  const nodeBin = process.execPath;
+  const tsxImportPath = path.resolve('node_modules/tsx/dist/esm/index.mjs');
 
   beforeEach(() => {
     tmpDir = createTempDir();
-    setupNanoclawDir(tmpDir);
+    setupAodDir(tmpDir);
     initGitRepo(tmpDir);
 
     // Write state file
-    const statePath = path.join(tmpDir, '.nanoclaw', 'state.yaml');
+    const statePath = path.join(tmpDir, '.aod', 'state.yaml');
     fs.writeFileSync(
       statePath,
       stringify({
@@ -44,7 +45,7 @@ describe('update-core.ts CLI flags', () => {
   }
 
   it('--json --preview-only outputs JSON preview without applying', () => {
-    const baseDir = path.join(tmpDir, '.nanoclaw', 'base');
+    const baseDir = path.join(tmpDir, '.aod', 'base');
     fs.mkdirSync(path.join(baseDir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(baseDir, 'src/index.ts'), 'original');
 
@@ -57,8 +58,8 @@ describe('update-core.ts CLI flags', () => {
     });
 
     const stdout = execFileSync(
-      tsxBin,
-      [scriptPath, '--json', '--preview-only', newCoreDir],
+      nodeBin,
+      ['--import', tsxImportPath, scriptPath, '--json', '--preview-only', newCoreDir],
       { cwd: tmpDir, encoding: 'utf-8', stdio: 'pipe', timeout: 30_000 },
     );
 
@@ -81,8 +82,8 @@ describe('update-core.ts CLI flags', () => {
     });
 
     const stdout = execFileSync(
-      tsxBin,
-      [scriptPath, '--preview-only', newCoreDir],
+      nodeBin,
+      ['--import', tsxImportPath, scriptPath, '--preview-only', newCoreDir],
       { cwd: tmpDir, encoding: 'utf-8', stdio: 'pipe', timeout: 30_000 },
     );
 
@@ -102,8 +103,8 @@ describe('update-core.ts CLI flags', () => {
     });
 
     const stdout = execFileSync(
-      tsxBin,
-      [scriptPath, '--json', newCoreDir],
+      nodeBin,
+      ['--import', tsxImportPath, scriptPath, '--json', newCoreDir],
       { cwd: tmpDir, encoding: 'utf-8', stdio: 'pipe', timeout: 30_000 },
     );
 
@@ -116,7 +117,7 @@ describe('update-core.ts CLI flags', () => {
 
   it('exits with error when no path provided', () => {
     try {
-      execFileSync(tsxBin, [scriptPath], {
+      execFileSync(nodeBin, ['--import', tsxImportPath, scriptPath], {
         cwd: tmpDir,
         encoding: 'utf-8',
         stdio: 'pipe',

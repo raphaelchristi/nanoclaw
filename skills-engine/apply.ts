@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 
 import { clearBackup, createBackup, restoreBackup } from './backup.js';
-import { NANOCLAW_DIR } from './constants.js';
+import { AOD_DIR } from './constants.js';
 import { copyDir } from './fs-utils.js';
 import { isCustomizeActive } from './customize.js';
 import { executeFileOps } from './file-ops.js';
@@ -30,8 +30,12 @@ import { computeFileHash, readState, recordSkillApplication, writeState } from '
 import {
   mergeDockerComposeServices,
   mergeEnvAdditions,
+  mergeLanggraphJson,
   mergeNpmDependencies,
+  mergePyprojectDependencies,
+  mergeRequirementsTxt,
   runNpmInstall,
+  runPipInstall,
 } from './structured.js';
 import { ApplyResult } from './types.js';
 
@@ -98,7 +102,7 @@ export async function applySkill(skillDir: string): Promise<ApplyResult> {
   for (const relPath of manifest.modifies) {
     const resolvedPath = resolvePathRemap(relPath, pathRemap);
     const currentPath = path.join(projectRoot, resolvedPath);
-    const basePath = path.join(projectRoot, NANOCLAW_DIR, 'base', resolvedPath);
+    const basePath = path.join(projectRoot, AOD_DIR, 'base', resolvedPath);
 
     if (fs.existsSync(currentPath) && fs.existsSync(basePath)) {
       const currentHash = computeFileHash(currentPath);
@@ -178,7 +182,7 @@ export async function applySkill(skillDir: string): Promise<ApplyResult> {
     for (const relPath of manifest.modifies) {
       const resolvedPath = resolvePathRemap(relPath, pathRemap);
       const currentPath = path.join(projectRoot, resolvedPath);
-      const basePath = path.join(projectRoot, NANOCLAW_DIR, 'base', resolvedPath);
+      const basePath = path.join(projectRoot, AOD_DIR, 'base', resolvedPath);
       // skillPath uses original relPath — skill packages are never mutated
       const skillPath = path.join(skillDir, 'modify', relPath);
 
@@ -205,7 +209,7 @@ export async function applySkill(skillDir: string): Promise<ApplyResult> {
       // git merge-file modifies the first argument in-place, so use a temp copy
       const tmpCurrent = path.join(
         os.tmpdir(),
-        `nanoclaw-merge-${crypto.randomUUID()}-${path.basename(relPath)}`,
+        `aod-merge-${crypto.randomUUID()}-${path.basename(relPath)}`,
       );
       fs.copyFileSync(currentPath, tmpCurrent);
 
@@ -281,12 +285,40 @@ export async function applySkill(skillDir: string): Promise<ApplyResult> {
       );
     }
 
-    // Run npm install if dependencies were added
+    // Python: merge pyproject.toml dependencies
+    if (manifest.structured?.pyproject_dependencies) {
+      const pyprojectPath = path.join(projectRoot, 'pyproject.toml');
+      if (fs.existsSync(pyprojectPath)) {
+        mergePyprojectDependencies(pyprojectPath, manifest.structured.pyproject_dependencies);
+      }
+    }
+
+    // Python: merge requirements.txt
+    if (manifest.structured?.requirements_txt) {
+      const reqPath = path.join(projectRoot, 'requirements.txt');
+      mergeRequirementsTxt(reqPath, manifest.structured.requirements_txt);
+    }
+
+    // Python: merge langgraph.json graphs
+    if (manifest.structured?.langgraph_graphs) {
+      const lgPath = path.join(projectRoot, 'langgraph.json');
+      mergeLanggraphJson(lgPath, manifest.structured.langgraph_graphs);
+    }
+
+    // Run npm install if npm dependencies were added
     if (
       manifest.structured?.npm_dependencies &&
       Object.keys(manifest.structured.npm_dependencies).length > 0
     ) {
       runNpmInstall();
+    }
+
+    // Run pip install if Python dependencies were added
+    if (
+      manifest.structured?.pyproject_dependencies &&
+      manifest.structured.pyproject_dependencies.length > 0
+    ) {
+      runPipInstall();
     }
 
     // --- Post-apply commands ---

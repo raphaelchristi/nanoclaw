@@ -7,6 +7,9 @@ export interface SkillManifest {
   modifies: string[];
   structured?: {
     npm_dependencies?: Record<string, string>;
+    pyproject_dependencies?: string[];
+    requirements_txt?: string[];
+    langgraph_graphs?: Record<string, string>;
     env_additions?: string[];
     docker_compose_services?: Record<string, unknown>;
   };
@@ -77,7 +80,7 @@ export interface CustomModification {
 }
 
 export interface FileInputHashes {
-  base: string;     // SHA-256 of .nanoclaw/base/<relPath>
+  base: string;     // SHA-256 of .aod/base/<relPath>
   current: string;  // SHA-256 of working tree <relPath> before this merge
   skill: string;    // SHA-256 of skill's modify/<relPath>
 }

@@ -9,7 +9,8 @@ describe('run-migrations', () => {
   let tmpDir: string;
   let newCoreDir: string;
   const scriptPath = path.resolve('scripts/run-migrations.ts');
-  const tsxBin = path.resolve('node_modules/.bin/tsx');
+  const nodeBin = process.execPath;
+  const tsxImportPath = path.resolve('node_modules/tsx/dist/esm/index.mjs');
 
   beforeEach(() => {
     tmpDir = createTempDir();
@@ -33,8 +34,8 @@ describe('run-migrations', () => {
   ): { stdout: string; exitCode: number } {
     try {
       const stdout = execFileSync(
-        tsxBin,
-        [scriptPath, from, to, newCoreDir],
+        nodeBin,
+        ['--import', tsxImportPath, scriptPath, from, to, newCoreDir],
         { cwd: tmpDir, encoding: 'utf-8', stdio: 'pipe', timeout: 30_000 },
       );
       return { stdout, exitCode: 0 };
