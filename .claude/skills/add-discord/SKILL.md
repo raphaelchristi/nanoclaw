@@ -1,217 +1,247 @@
-# Add Discord Channel
+---
+name: add-discord
+description: "Add Discord bot channel to the LangGraph project. Creates a Discord bot that listens for messages and invokes the graph. Triggers on 'add discord', 'discord bot', 'discord channel', 'discord integration'."
+---
 
-This skill adds Discord support to NanoClaw using the skills engine for deterministic code changes, then walks through interactive setup.
+# Add Discord Bot Channel
 
-## Phase 1: Pre-flight
+Adds a Discord bot that listens for messages in configured channels, processes them through the LangGraph graph, and sends responses back.
 
-### Check if already applied
+## What This Adds
 
-Read `.nanoclaw/state.yaml`. If `discord` is in `applied_skills`, skip to Phase 3 (Setup). The code changes are already in place.
+- A `channels/discord.py` module with a Discord bot using `discord.py`
+- Message handler that invokes the compiled graph
+- Bot lifecycle management in `main.py`
+- Environment variable configuration for the bot token
+- Support for DMs and guild channel messages
 
-### Ask the user
+## Prerequisites
 
-Use `AskUserQuestion` to collect configuration:
+- A Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications)
+- The bot must be invited to a server with the `MESSAGE_CONTENT` privileged intent enabled
+- The project must have a compiled graph in `graph.py`
+- Python 3.11+
 
-AskUserQuestion: Should Discord replace WhatsApp or run alongside it?
-- **Replace WhatsApp** - Discord will be the only channel (sets DISCORD_ONLY=true)
-- **Alongside** - Both Discord and WhatsApp channels active
+## Parameters / Questions
 
-AskUserQuestion: Do you have a Discord bot token, or do you need to create one?
+Ask the user:
 
-If they have one, collect it now. If not, we'll create one in Phase 3.
+1. **Should the bot respond to all messages or only when mentioned?**
+   - In DMs: always respond
+   - In server channels: respond to all messages vs. only when mentioned (`@bot` or prefix command)
+2. **Command prefix?** (default: `!` — e.g., `!ask what is the weather?`)
+   - Or no prefix, just mention the bot
+3. **Restrict to specific channels?** (default: respond in all channels the bot can see)
+   - If yes, ask for channel IDs or names
 
-## Phase 2: Apply Code Changes
+## Workflow
 
-Run the skills engine to apply this skill's code package. The package files are in this directory alongside this SKILL.md.
+### Step 1: Create the channel module
 
-### Initialize skills system (if needed)
+Create `channels/__init__.py` if it does not exist.
 
-If `.nanoclaw/` directory doesn't exist yet:
+Create `channels/discord.py`:
+
+```python
+"""Discord bot channel — receives messages and invokes the LangGraph graph."""
+
+import logging
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+from graph import graph
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+class AgentBot(commands.Bot):
+    """Discord bot that processes messages through the LangGraph graph."""
+
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix=settings.discord_command_prefix, intents=intents)
+
+    async def on_ready(self):
+        logger.info(f"Discord bot connected as {self.user} (ID: {self.user.id})")
+
+    async def on_message(self, message: discord.Message):
+        # Ignore messages from the bot itself
+        if message.author == self.user:
+            return
+
+        # Process commands first
+        await self.process_commands(message)
+
+        # Determine if we should respond
+        should_respond = False
+
+        # Always respond in DMs
+        if isinstance(message.channel, discord.DMChannel):
+            should_respond = True
+        # In guilds, respond when mentioned
+        elif self.user.mentioned_in(message):
+            should_respond = True
+
+        if not should_respond:
+            return
+
+        # Clean the message content (remove bot mention)
+        content = message.content
+        if self.user:
+            content = content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "").strip()
+
+        if not content:
+            return
+
+        session_id = f"discord:{message.channel.id}:{message.author.id}"
+
+        logger.info(f"Discord message from {message.author} in {message.channel}")
+
+        async with message.channel.typing():
+            try:
+                result = await graph.ainvoke(
+                    {
+                        "messages": [{"role": "user", "content": content}],
+                        "session_id": session_id,
+                        "metadata": {
+                            "channel": "discord",
+                            "user_id": str(message.author.id),
+                            "channel_id": str(message.channel.id),
+                            "guild_id": str(message.guild.id) if message.guild else "",
+                            "username": str(message.author),
+                        },
+                    }
+                )
+
+                if result.get("messages"):
+                    last_message = result["messages"][-1]
+                    response_text = (
+                        last_message.content
+                        if hasattr(last_message, "content")
+                        else str(last_message)
+                    )
+                    # Discord has a 2000 char limit per message
+                    for i in range(0, len(response_text), 2000):
+                        await message.reply(response_text[i : i + 2000])
+            except Exception:
+                logger.exception("Error processing Discord message")
+                await message.reply("Sorry, something went wrong processing your message.")
+
+
+def create_discord_bot() -> AgentBot:
+    """Create and return the Discord bot instance."""
+    if not settings.discord_bot_token:
+        raise ValueError("DISCORD_BOT_TOKEN is not set in environment")
+    return AgentBot()
+```
+
+### Step 2: Update settings
+
+Add to `config/settings.py` in the `Settings` class:
+
+```python
+    # Discord
+    discord_bot_token: str = ""
+    discord_command_prefix: str = "!"
+```
+
+### Step 3: Update main.py
+
+Modify `main.py` to run the Discord bot. The Discord bot has its own event loop, so it must be integrated carefully with any other async components:
+
+```python
+import asyncio
+from channels.discord import create_discord_bot
+from config.settings import settings
+
+async def main():
+    """Run the LangGraph system with Discord bot."""
+    bot = create_discord_bot()
+
+    print("Starting Discord bot...")
+    try:
+        await bot.start(settings.discord_bot_token)
+    except KeyboardInterrupt:
+        await bot.close()
+```
+
+**If other async services are already running** (e.g., FastAPI from add-api, Telegram polling), use `asyncio.gather()` or `asyncio.TaskGroup` to run them concurrently:
+
+```python
+async def main():
+    """Run all services concurrently."""
+    bot = create_discord_bot()
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(bot.start(settings.discord_bot_token))
+        # tg.create_task(other_service())
+
+    # Or for Python < 3.11:
+    # await asyncio.gather(bot.start(settings.discord_bot_token), other_service())
+```
+
+### Step 4: Update .env.example
+
+Append:
+
+```
+# Discord Bot
+DISCORD_BOT_TOKEN=your-discord-bot-token
+DISCORD_COMMAND_PREFIX=!
+```
+
+### Step 5: Update pyproject.toml
+
+Add `"discord.py>=2.3.0"` to the `dependencies` list in `pyproject.toml`.
+
+### Step 6: Install dependencies
 
 ```bash
-npx tsx scripts/apply-skill.ts --init
+pip install -e .
 ```
 
-Or call `initSkillsSystem()` from `skills-engine/migrate.ts`.
+## Files Created
 
-### Apply the skill
+| File | Purpose |
+|------|---------|
+| `channels/__init__.py` | Package init (if not existing) |
+| `channels/discord.py` | Discord bot class, message handler, graph invocation |
 
-```bash
-npx tsx scripts/apply-skill.ts .claude/skills/add-discord
-```
+## Files Modified
 
-This deterministically:
-- Adds `src/channels/discord.ts` (DiscordChannel class implementing Channel interface)
-- Adds `src/channels/discord.test.ts` (unit tests with discord.js mock)
-- Three-way merges Discord support into `src/index.ts` (multi-channel support, findChannel routing)
-- Three-way merges Discord config into `src/config.ts` (DISCORD_BOT_TOKEN, DISCORD_ONLY exports)
-- Three-way merges updated routing tests into `src/routing.test.ts`
-- Installs the `discord.js` npm dependency
-- Updates `.env.example` with `DISCORD_BOT_TOKEN` and `DISCORD_ONLY`
-- Records the application in `.nanoclaw/state.yaml`
+| File | Change |
+|------|--------|
+| `config/settings.py` | Add `discord_bot_token` and `discord_command_prefix` fields |
+| `main.py` | Add Discord bot startup and lifecycle management |
+| `.env.example` | Add `DISCORD_BOT_TOKEN` variable |
+| `pyproject.toml` | Add `discord.py>=2.3.0` dependency |
 
-If the apply reports merge conflicts, read the intent files:
-- `modify/src/index.ts.intent.md` — what changed and invariants for index.ts
-- `modify/src/config.ts.intent.md` — what changed for config.ts
+## Example
 
-### Validate code changes
+User: "Add a Discord bot to my agent"
 
-```bash
-npm test
-npm run build
-```
+1. Ask about mention-only vs. all-messages behavior
+2. Create `channels/discord.py` with bot class
+3. Add settings fields for token and prefix
+4. Modify `main.py` to start the bot
+5. Update `.env.example` and `pyproject.toml`
+6. Tell the user:
+   - "Go to the Discord Developer Portal, create an application, and create a bot"
+   - "Enable the MESSAGE_CONTENT privileged intent"
+   - "Generate an invite link with `bot` scope and `Send Messages` + `Read Message History` permissions"
+   - "Add the bot to your server"
+   - "Copy the token to `.env` as `DISCORD_BOT_TOKEN`"
+   - "Run `python main.py`"
 
-All tests must pass (including the new Discord tests) and build must be clean before proceeding.
+## Verification
 
-## Phase 3: Setup
-
-### Create Discord Bot (if needed)
-
-If the user doesn't have a bot token, tell them:
-
-> I need you to create a Discord bot:
->
-> 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-> 2. Click **New Application** and give it a name (e.g., "Andy Assistant")
-> 3. Go to the **Bot** tab on the left sidebar
-> 4. Click **Reset Token** to generate a new bot token — copy it immediately (you can only see it once)
-> 5. Under **Privileged Gateway Intents**, enable:
->    - **Message Content Intent** (required to read message text)
->    - **Server Members Intent** (optional, for member display names)
-> 6. Go to **OAuth2** > **URL Generator**:
->    - Scopes: select `bot`
->    - Bot Permissions: select `Send Messages`, `Read Message History`, `View Channels`
->    - Copy the generated URL and open it in your browser to invite the bot to your server
-
-Wait for the user to provide the token.
-
-### Configure environment
-
-Add to `.env`:
-
-```bash
-DISCORD_BOT_TOKEN=<their-token>
-```
-
-If they chose to replace WhatsApp:
-
-```bash
-DISCORD_ONLY=true
-```
-
-Sync to container environment:
-
-```bash
-cp .env data/env/env
-```
-
-The container reads environment from `data/env/env`, not `.env` directly.
-
-### Build and restart
-
-```bash
-npm run build
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw
-```
-
-## Phase 4: Registration
-
-### Get Channel ID
-
-Tell the user:
-
-> To get the channel ID for registration:
->
-> 1. In Discord, go to **User Settings** > **Advanced** > Enable **Developer Mode**
-> 2. Right-click the text channel you want the bot to respond in
-> 3. Click **Copy Channel ID**
->
-> The channel ID will be a long number like `1234567890123456`.
-
-Wait for the user to provide the channel ID (format: `dc:1234567890123456`).
-
-### Register the channel
-
-Use the IPC register flow or register directly. The channel ID, name, and folder name are needed.
-
-For a main channel (responds to all messages, uses the `main` folder):
-
-```typescript
-registerGroup("dc:<channel-id>", {
-  name: "<server-name> #<channel-name>",
-  folder: "main",
-  trigger: `@${ASSISTANT_NAME}`,
-  added_at: new Date().toISOString(),
-  requiresTrigger: false,
-});
-```
-
-For additional channels (trigger-only):
-
-```typescript
-registerGroup("dc:<channel-id>", {
-  name: "<server-name> #<channel-name>",
-  folder: "<folder-name>",
-  trigger: `@${ASSISTANT_NAME}`,
-  added_at: new Date().toISOString(),
-  requiresTrigger: true,
-});
-```
-
-## Phase 5: Verify
-
-### Test the connection
-
-Tell the user:
-
-> Send a message in your registered Discord channel:
-> - For main channel: Any message works
-> - For non-main: @mention the bot in Discord
->
-> The bot should respond within a few seconds.
-
-### Check logs if needed
-
-```bash
-tail -f logs/nanoclaw.log
-```
-
-## Troubleshooting
-
-### Bot not responding
-
-1. Check `DISCORD_BOT_TOKEN` is set in `.env` AND synced to `data/env/env`
-2. Check channel is registered: `sqlite3 store/messages.db "SELECT * FROM registered_groups WHERE jid LIKE 'dc:%'"`
-3. For non-main channels: message must include trigger pattern (@mention the bot)
-4. Service is running: `launchctl list | grep nanoclaw`
-5. Verify the bot has been invited to the server (check OAuth2 URL was used)
-
-### Bot only responds to @mentions
-
-This is the default behavior for non-main channels (`requiresTrigger: true`). To change:
-- Update the registered group's `requiresTrigger` to `false`
-- Or register the channel as the main channel
-
-### Message Content Intent not enabled
-
-If the bot connects but can't read messages, ensure:
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Select your application > **Bot** tab
-3. Under **Privileged Gateway Intents**, enable **Message Content Intent**
-4. Restart NanoClaw
-
-### Getting Channel ID
-
-If you can't copy the channel ID:
-- Ensure **Developer Mode** is enabled: User Settings > Advanced > Developer Mode
-- Right-click the channel name in the server sidebar > Copy Channel ID
-
-## After Setup
-
-The Discord bot supports:
-- Text messages in registered channels
-- Attachment descriptions (images, videos, files shown as placeholders)
-- Reply context (shows who the user is replying to)
-- @mention translation (Discord `<@botId>` → NanoClaw trigger format)
-- Message splitting for responses over 2000 characters
-- Typing indicators while the agent processes
+After setup, the user should:
+1. Set `DISCORD_BOT_TOKEN` in `.env`
+2. Run `python main.py`
+3. See "Discord bot connected as ..." in the logs
+4. Mention the bot in a Discord channel or send a DM
+5. Verify the graph processes the message and the bot replies

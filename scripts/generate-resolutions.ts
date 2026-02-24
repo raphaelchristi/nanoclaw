@@ -28,10 +28,11 @@ function sha256(filePath: string): string {
 }
 
 const projectRoot = process.cwd();
-const baseDir = '.nanoclaw/base';
+const baseDir = '.aod/base';
 
 // The files that conflict when applying discord after telegram
-const conflictFiles = ['src/index.ts', 'src/config.ts', 'src/routing.test.ts'];
+// These should be updated to reflect actual conflicting files in the AOD Engine project
+const conflictFiles = ['main.py', 'graph.py', 'state.py'];
 
 const telegramModify = '.claude/skills/add-telegram/modify';
 const discordModify = '.claude/skills/add-discord/modify';
@@ -81,7 +82,7 @@ for (const relPath of conflictFiles) {
   })();
 
   // Do the merge to produce conflict markers
-  const tmpFile = path.join(os.tmpdir(), `nanoclaw-gen-${Date.now()}-${path.basename(relPath)}`);
+  const tmpFile = path.join(os.tmpdir(), `aod-gen-${Date.now()}-${path.basename(relPath)}`);
   fs.copyFileSync(oursPath, tmpFile);
   const result = mergeFile(tmpFile, basePath, theirsPath);
 

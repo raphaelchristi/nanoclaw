@@ -6,7 +6,7 @@ export {
   SKILLS_SCHEMA_VERSION,
   CUSTOM_DIR,
   LOCK_FILE,
-  NANOCLAW_DIR,
+  AOD_DIR,
   RESOLUTIONS_DIR,
   SHIPPED_RESOLUTIONS_DIR,
   STATE_FILE,
@@ -18,7 +18,7 @@ export {
   startCustomize,
 } from './customize.js';
 export { executeFileOps } from './file-ops.js';
-export { initNanoclawDir } from './init.js';
+export { initAodDir } from './init.js';
 export { acquireLock, isLocked, releaseLock } from './lock.js';
 export {
   checkConflicts,
@@ -65,8 +65,12 @@ export {
   areRangesCompatible,
   mergeDockerComposeServices,
   mergeEnvAdditions,
+  mergeLanggraphJson,
   mergeNpmDependencies,
+  mergePyprojectDependencies,
+  mergeRequirementsTxt,
   runNpmInstall,
+  runPipInstall,
 } from './structured.js';
 export type {
   AppliedSkill,

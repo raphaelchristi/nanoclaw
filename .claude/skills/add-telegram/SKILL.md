@@ -1,243 +1,214 @@
 ---
 name: add-telegram
-description: Add Telegram as a channel. Can replace WhatsApp entirely or run alongside it. Also configurable as a control-only channel (triggers actions) or passive channel (receives notifications only).
+description: "Add Telegram bot channel to the LangGraph project. Creates a Telegram bot that receives messages and invokes the graph. Supports both webhook and polling modes. Triggers on 'add telegram', 'telegram bot', 'telegram channel'."
 ---
 
-# Add Telegram Channel
+# Add Telegram Bot Channel
 
-This skill adds Telegram support to NanoClaw using the skills engine for deterministic code changes, then walks through interactive setup.
+Adds a Telegram bot that receives messages and forwards them to the LangGraph graph for processing, then sends responses back to the user.
 
-## Phase 1: Pre-flight
+## What This Adds
 
-### Check if already applied
+- A `channels/telegram.py` module with a Telegram bot using `python-telegram-bot`
+- Webhook or long-polling message handler that invokes the compiled graph
+- Startup/shutdown lifecycle hooks in `main.py`
+- Environment variable configuration for the bot token
+- Optional webhook mode with FastAPI integration (if add-api skill is installed)
 
-Read `.nanoclaw/state.yaml`. If `telegram` is in `applied_skills`, skip to Phase 3 (Setup). The code changes are already in place.
+## Prerequisites
 
-### Ask the user
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+- The project must have a compiled graph in `graph.py` (any topology)
+- Python 3.11+
 
-Use `AskUserQuestion` to collect configuration:
+## Parameters / Questions
 
-AskUserQuestion: Should Telegram replace WhatsApp or run alongside it?
-- **Replace WhatsApp** - Telegram will be the only channel (sets TELEGRAM_ONLY=true)
-- **Alongside** - Both Telegram and WhatsApp channels active
+Ask the user:
 
-AskUserQuestion: Do you have a Telegram bot token, or do you need to create one?
+1. **Polling or Webhook mode?**
+   - **Polling** (default): Simpler setup, bot polls Telegram servers. Good for development and single-instance deployments.
+   - **Webhook**: Requires a public URL. Better for production. If `api/server.py` exists (add-api skill), register the webhook route there. Otherwise, create a minimal FastAPI app for the webhook.
 
-If they have one, collect it now. If not, we'll create one in Phase 3.
+2. **Should the bot respond to all messages or only when mentioned?**
+   - All messages in private chats (always)
+   - In groups: respond to all vs. only when mentioned with `/ask` or `@botname`
 
-## Phase 2: Apply Code Changes
+## Workflow
 
-Run the skills engine to apply this skill's code package. The package files are in this directory alongside this SKILL.md.
+### Step 1: Create the channel module
 
-### Initialize skills system (if needed)
+Create `channels/__init__.py` if it does not exist (empty file).
 
-If `.nanoclaw/` directory doesn't exist yet:
+Create `channels/telegram.py`:
+
+```python
+"""Telegram bot channel — receives messages and invokes the LangGraph graph."""
+
+import logging
+from typing import Optional
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from graph import graph
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming Telegram messages by invoking the graph."""
+    if not update.message or not update.message.text:
+        return
+
+    user_id = str(update.effective_user.id)
+    chat_id = str(update.effective_chat.id)
+    session_id = f"telegram:{chat_id}:{user_id}"
+
+    logger.info(f"Telegram message from {user_id} in {chat_id}")
+
+    try:
+        result = await graph.ainvoke(
+            {
+                "messages": [{"role": "user", "content": update.message.text}],
+                "session_id": session_id,
+                "metadata": {
+                    "channel": "telegram",
+                    "user_id": user_id,
+                    "chat_id": chat_id,
+                    "username": update.effective_user.username or "",
+                },
+            }
+        )
+
+        if result.get("messages"):
+            last_message = result["messages"][-1]
+            response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
+            await update.message.reply_text(response_text)
+    except Exception:
+        logger.exception("Error processing Telegram message")
+        await update.message.reply_text("Sorry, something went wrong processing your message.")
+
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /start command."""
+    await update.message.reply_text(
+        f"Hello! I'm {settings.app_name}. Send me a message and I'll respond."
+    )
+
+
+def create_telegram_app() -> Application:
+    """Create and configure the Telegram bot application."""
+    if not settings.telegram_bot_token:
+        raise ValueError("TELEGRAM_BOT_TOKEN is not set in environment")
+
+    app = Application.builder().token(settings.telegram_bot_token).build()
+
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    return app
+```
+
+### Step 2: Update settings
+
+Add to `config/settings.py` in the `Settings` class:
+
+```python
+    # Telegram
+    telegram_bot_token: str = ""
+    telegram_webhook_url: str = ""  # Only needed for webhook mode
+```
+
+### Step 3: Update main.py
+
+Add the Telegram bot startup to the main function. For polling mode:
+
+```python
+import asyncio
+from channels.telegram import create_telegram_app
+
+async def main():
+    """Run the LangGraph system with Telegram bot."""
+    telegram_app = create_telegram_app()
+
+    # Initialize the bot
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.updater.start_polling()
+
+    print("Telegram bot is running. Press Ctrl+C to stop.")
+
+    try:
+        # Keep running until interrupted
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        await telegram_app.updater.stop()
+        await telegram_app.stop()
+        await telegram_app.shutdown()
+```
+
+For webhook mode (when add-api is present), instead register the webhook in the FastAPI app lifespan.
+
+### Step 4: Update .env.example
+
+Append:
+
+```
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=your-bot-token-from-botfather
+# TELEGRAM_WEBHOOK_URL=https://your-domain.com/api/v1/telegram/webhook
+```
+
+### Step 5: Update pyproject.toml
+
+Add `"python-telegram-bot>=21.0"` to the `dependencies` list in `pyproject.toml`.
+
+### Step 6: Install dependencies
 
 ```bash
-npx tsx scripts/apply-skill.ts --init
+pip install -e .
 ```
 
-Or call `initSkillsSystem()` from `skills-engine/migrate.ts`.
+## Files Created
 
-### Apply the skill
+| File | Purpose |
+|------|---------|
+| `channels/__init__.py` | Package init (if not existing) |
+| `channels/telegram.py` | Telegram bot handler, message processing, graph invocation |
 
-```bash
-npx tsx scripts/apply-skill.ts .claude/skills/add-telegram
-```
+## Files Modified
 
-This deterministically:
-- Adds `src/channels/telegram.ts` (TelegramChannel class implementing Channel interface)
-- Adds `src/channels/telegram.test.ts` (46 unit tests)
-- Three-way merges Telegram support into `src/index.ts` (multi-channel support, findChannel routing)
-- Three-way merges Telegram config into `src/config.ts` (TELEGRAM_BOT_TOKEN, TELEGRAM_ONLY exports)
-- Three-way merges updated routing tests into `src/routing.test.ts`
-- Installs the `grammy` npm dependency
-- Updates `.env.example` with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ONLY`
-- Records the application in `.nanoclaw/state.yaml`
+| File | Change |
+|------|--------|
+| `config/settings.py` | Add `telegram_bot_token` and `telegram_webhook_url` fields |
+| `main.py` | Add Telegram bot initialization and lifecycle management |
+| `.env.example` | Add `TELEGRAM_BOT_TOKEN` variable |
+| `pyproject.toml` | Add `python-telegram-bot>=21.0` dependency |
 
-If the apply reports merge conflicts, read the intent files:
-- `modify/src/index.ts.intent.md` — what changed and invariants for index.ts
-- `modify/src/config.ts.intent.md` — what changed for config.ts
+## Example
 
-### Validate code changes
+User: "Add a Telegram bot to my project"
 
-```bash
-npm test
-npm run build
-```
+1. Ask polling vs. webhook preference
+2. Create `channels/telegram.py` with message handler that invokes the graph
+3. Add settings fields for the bot token
+4. Modify `main.py` to start the Telegram bot in the async event loop
+5. Update `.env.example` and `pyproject.toml`
+6. Tell the user: "Create a bot via @BotFather on Telegram, copy the token to your `.env` file as `TELEGRAM_BOT_TOKEN`, then run `python main.py`."
 
-All tests must pass (including the new telegram tests) and build must be clean before proceeding.
+## Verification
 
-## Phase 3: Setup
-
-### Create Telegram Bot (if needed)
-
-If the user doesn't have a bot token, tell them:
-
-> I need you to create a Telegram bot:
->
-> 1. Open Telegram and search for `@BotFather`
-> 2. Send `/newbot` and follow prompts:
->    - Bot name: Something friendly (e.g., "Andy Assistant")
->    - Bot username: Must end with "bot" (e.g., "andy_ai_bot")
-> 3. Copy the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
-
-Wait for the user to provide the token.
-
-### Configure environment
-
-Add to `.env`:
-
-```bash
-TELEGRAM_BOT_TOKEN=<their-token>
-```
-
-If they chose to replace WhatsApp:
-
-```bash
-TELEGRAM_ONLY=true
-```
-
-Sync to container environment:
-
-```bash
-mkdir -p data/env && cp .env data/env/env
-```
-
-The container reads environment from `data/env/env`, not `.env` directly.
-
-### Disable Group Privacy (for group chats)
-
-Tell the user:
-
-> **Important for group chats**: By default, Telegram bots only see @mentions and commands in groups. To let the bot see all messages:
->
-> 1. Open Telegram and search for `@BotFather`
-> 2. Send `/mybots` and select your bot
-> 3. Go to **Bot Settings** > **Group Privacy** > **Turn off**
->
-> This is optional if you only want trigger-based responses via @mentioning the bot.
-
-### Build and restart
-
-```bash
-npm run build
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # macOS
-# Linux: systemctl --user restart nanoclaw
-```
-
-## Phase 4: Registration
-
-### Get Chat ID
-
-Tell the user:
-
-> 1. Open your bot in Telegram (search for its username)
-> 2. Send `/chatid` — it will reply with the chat ID
-> 3. For groups: add the bot to the group first, then send `/chatid` in the group
-
-Wait for the user to provide the chat ID (format: `tg:123456789` or `tg:-1001234567890`).
-
-### Register the chat
-
-Use the IPC register flow or register directly. The chat ID, name, and folder name are needed.
-
-For a main chat (responds to all messages, uses the `main` folder):
-
-```typescript
-registerGroup("tg:<chat-id>", {
-  name: "<chat-name>",
-  folder: "main",
-  trigger: `@${ASSISTANT_NAME}`,
-  added_at: new Date().toISOString(),
-  requiresTrigger: false,
-});
-```
-
-For additional chats (trigger-only):
-
-```typescript
-registerGroup("tg:<chat-id>", {
-  name: "<chat-name>",
-  folder: "<folder-name>",
-  trigger: `@${ASSISTANT_NAME}`,
-  added_at: new Date().toISOString(),
-  requiresTrigger: true,
-});
-```
-
-## Phase 5: Verify
-
-### Test the connection
-
-Tell the user:
-
-> Send a message to your registered Telegram chat:
-> - For main chat: Any message works
-> - For non-main: `@Andy hello` or @mention the bot
->
-> The bot should respond within a few seconds.
-
-### Check logs if needed
-
-```bash
-tail -f logs/nanoclaw.log
-```
-
-## Troubleshooting
-
-### Bot not responding
-
-Check:
-1. `TELEGRAM_BOT_TOKEN` is set in `.env` AND synced to `data/env/env`
-2. Chat is registered in SQLite (check with: `sqlite3 store/messages.db "SELECT * FROM registered_groups WHERE jid LIKE 'tg:%'"`)
-3. For non-main chats: message includes trigger pattern
-4. Service is running: `launchctl list | grep nanoclaw` (macOS) or `systemctl --user status nanoclaw` (Linux)
-
-### Bot only responds to @mentions in groups
-
-Group Privacy is enabled (default). Fix:
-1. `@BotFather` > `/mybots` > select bot > **Bot Settings** > **Group Privacy** > **Turn off**
-2. Remove and re-add the bot to the group (required for the change to take effect)
-
-### Getting chat ID
-
-If `/chatid` doesn't work:
-- Verify token: `curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"`
-- Check bot is started: `tail -f logs/nanoclaw.log`
-
-## After Setup
-
-If running `npm run dev` while the service is active:
-```bash
-# macOS:
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
-npm run dev
-# When done testing:
-launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
-# Linux:
-# systemctl --user stop nanoclaw
-# npm run dev
-# systemctl --user start nanoclaw
-```
-
-## Agent Swarms (Teams)
-
-After completing the Telegram setup, use `AskUserQuestion`:
-
-AskUserQuestion: Would you like to add Agent Swarm support? Without it, Agent Teams still work — they just operate behind the scenes. With Swarm support, each subagent appears as a different bot in the Telegram group so you can see who's saying what and have interactive team sessions.
-
-If they say yes, invoke the `/add-telegram-swarm` skill.
-
-## Removal
-
-To remove Telegram integration:
-
-1. Delete `src/channels/telegram.ts`
-2. Remove `TelegramChannel` import and creation from `src/index.ts`
-3. Remove `channels` array and revert to using `whatsapp` directly in `processGroupMessages`, scheduler deps, and IPC deps
-4. Revert `getAvailableGroups()` filter to only include `@g.us` chats
-5. Remove Telegram config (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ONLY`) from `src/config.ts`
-6. Remove Telegram registrations from SQLite: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE 'tg:%'"`
-7. Uninstall: `npm uninstall grammy`
-8. Rebuild: `npm run build && launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS) or `npm run build && systemctl --user restart nanoclaw` (Linux)
+After setup, the user should:
+1. Set `TELEGRAM_BOT_TOKEN` in `.env`
+2. Run `python main.py`
+3. Open Telegram, find the bot, send `/start`
+4. Send a message and verify the graph processes it and responds

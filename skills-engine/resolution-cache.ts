@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { parse, stringify } from 'yaml';
 
-import { NANOCLAW_DIR, RESOLUTIONS_DIR, SHIPPED_RESOLUTIONS_DIR } from './constants.js';
+import { AOD_DIR, RESOLUTIONS_DIR, SHIPPED_RESOLUTIONS_DIR } from './constants.js';
 import { computeFileHash } from './state.js';
 import { FileInputHashes, ResolutionMeta } from './types.js';
 
@@ -43,8 +43,10 @@ export function findResolutionDir(
 export function loadResolutions(
   skills: string[],
   projectRoot: string,
-  skillDir: string,
+  skillDir?: string,
 ): boolean {
+  if (!skillDir) return false;
+
   const resDir = findResolutionDir(skills, projectRoot);
   if (!resDir) return false;
 
@@ -89,7 +91,7 @@ export function loadResolutions(
       continue;
     }
 
-    const basePath = path.join(projectRoot, NANOCLAW_DIR, 'base', relPath);
+    const basePath = path.join(projectRoot, AOD_DIR, 'base', relPath);
     const currentPath = path.join(projectRoot, relPath);
     const skillModifyPath = path.join(skillDir, 'modify', relPath);
 
